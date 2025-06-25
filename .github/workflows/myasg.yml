@@ -1,0 +1,98 @@
+name: Zomato CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+      SONAR_HOST_URL: "https://your-sonarqube-server.com"
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+
+    - name: Set up JDK
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Cache SonarQube scanner
+      uses: actions/cache@v3
+      with:
+        path: ~/.sonar/cache
+        key: ${{ runner.os }}-sonar
+
+    - name: SonarQube Scan
+      uses: SonarSource/sonarqube-scan-action@v1.2
+      with:
+        projectBaseDir: .
+        args: >
+          -Dsonar.projectKey=zomato
+          -Dsonar.projectName=zomato
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+
+    - name: Install NPM Dependencies
+      run: npm install
+
+    - name: OWASP Dependency Check
+      uses: dependency-check/Dependency-Check_Action@main
+      with:
+        project: 'zomato'
+        scan: './'
+        format: 'HTML'
+        out: 'reports'
+    
+    - name: Upload OWASP Report
+      uses: actions/upload-artifact@v3
+      with:
+        name: owasp-report
+        path: reports/dependency-check-report.html
+
+    - name: Trivy FS Scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        output: 'trivy.txt'
+
+    - name: Upload Trivy Report
+      uses: actions/upload-artifact@v3
+      with:
+        name: trivy-report
+        path: trivy.txt
+
+    - name: Log in to DockerHub
+      run: echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
+
+    - name: Build Docker Image
+      run: docker build -t $DOCKER_USERNAME/zomato:latest .
+
+    - name: Push Docker Image
+      run: docker push $DOCKER_USERNAME/zomato:latest
+
+    - name: Docker Scout Scan
+      run: |
+        curl -sSfL https://raw.githubusercontent.com/docker/scout-cli/main/install.sh | sh -s --
+        ./scout quickview $DOCKER_USERNAME/zomato:latest
+        ./scout cves $DOCKER_USERNAME/zomato:latest
+        ./scout recommendations $DOCKER_USERNAME/zomato:latest
+
+    - name: Run Container (optional)
+      run: |
+        docker run -d --name zomato -p 3000:3000 $DOCKER_USERNAME/zomato:latest
